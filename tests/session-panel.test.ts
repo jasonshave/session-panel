@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import {
   activityOf, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
@@ -304,6 +305,63 @@ test('the panel lists what fills the context, largest first', async ($, on) => {
     expect(drawn.indexOf('messages')).toBeLessThan(drawn.indexOf('system prompt'))
     await ui.unmount()
   }
+})
+
+// A new session has no reported fill until its first response: the bar draws from the
+// breakdown's estimate at once, and the first reported fill replaces it. A resumed session
+// that already knows its fill draws it at the start.
+describe('the context bar before the first response', () => {
+  const start = async (
+    ...[$, on, context]: [...Parameters<TestBody>, Record<string, unknown>]
+  ) => {
+    const breakdown = {
+      categories: [{ name: 'System prompt', tokens: 18000, kind: 'used', color: 'inactive', isDeferred: false }],
+      totalTokens: 18000, maxTokens: 1_000_000, rawMaxTokens: 1_000_000, autocompactSource: 'model',
+      percentage: 2, gridRows: [], model: 'test', memoryFiles: [], mcpTools: [], agents: [],
+      isAutoCompactEnabled: false, apiUsage: null,
+    }
+    on('session.usage', (_, e) => ({ value: {
+      startedAt: 0, rateLimits: [],
+      context: { window: 1_000_000, ...context, ...((e as { breakdown?: string }).breakdown ? { breakdown } : {}) },
+    } }) as never)
+    on('session.turns', () => ({ value: 0 }) as never)
+    on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
+    on('settings.read', () => ({ value: {} }) as never)
+    on('session.repo', () => ({ value: null }) as never)
+    on('session.cwd', () => ({ value: 'C:/code/my-app' }) as never)
+    on('store.get', () => ({ value: undefined }) as never)
+    on('fs.read', () => ({ value: '{}' }) as never)
+    on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }) as never)
+    on('command.register', (_, e) => ({ value: { command: (e as { name: string }).name } }) as never)
+    on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+    on('session.measure', (_, e) => ({ changed: e.changed }))
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    const clock = mock.clock(on, { now: START })
+    await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true } as never)
+    await clock.settle()
+    return clock
+  }
+
+  test('a new session draws the estimate, then the reported fill', async ($, on) => {
+    const clock = await start($, on, {})
+    let ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /~18k of 1M/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /system prompt/ })).toBeDefined()
+    await ui.unmount()
+
+    await $.session.measure({ context: { tokens: 25000, window: 1_000_000, percent: 3 }, rateLimits: [], changed: ['context'] })
+    await clock.settle()
+    ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /· 25k of 1M/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a resumed session draws its reported fill at the start', async ($, on) => {
+    await start($, on, { tokens: 92000, percent: 9 })
+    const ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /· 92k of 1M/ })).toBeDefined()
+    await ui.unmount()
+  })
 })
 
 // /clear empties the session's values without a session.start the module can rely on:

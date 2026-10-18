@@ -1,5 +1,6 @@
-// How full the context window is.
-export type Snapshot = { tokens: number; window: number; percent: number }
+// How full the context window is: as the last response reported it, or (isEstimate) as the
+// breakdown counts it before the first response.
+export type Snapshot = { tokens: number; window: number; percent: number; isEstimate?: boolean }
 
 // What fills the context, by category, as of `tokens`: drawn in the hover card.
 export type Breakdown = { tokens: number; rows: { name: string; tokens: number }[] }

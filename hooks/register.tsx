@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionRateLimit, Timer, TurnStepResult } from 'claude-code'
+import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit, Timer, TurnStepResult } from 'claude-code'
 
 import type { Agent, Breakdown, Cache, Day, Git, GitFile, Limit, Model, Scoped, Snapshot, Weather } from '../types'
 
@@ -512,6 +512,11 @@ export const segments = (rows: { name: string; tokens: number }[], cells: number
   return rows.map((r, i) => ({ name: r.name, cells: out[i] ?? 0 })).filter(seg => seg.cells > 0)
 }
 
+// The fill as the last response reported it; none before a session's first response.
+export const snapshotOf = (c: SessionContextUsage): Snapshot | null =>
+  c.tokens === undefined ? null
+  : { tokens: c.tokens, window: c.window, percent: c.percent ?? Math.round((c.tokens / c.window) * 100) }
+
 let isCounting = false
 const loadBreakdown = async ($: EngineInterface) => {
   if (isCounting) return
@@ -525,6 +530,13 @@ const loadBreakdown = async ($: EngineInterface) => {
         rows: b.categories.filter(c => c.kind === 'used' && c.tokens > 0).map(c => ({ name: c.name, tokens: c.tokens })),
       }
       if (!same(await read($, breakdown), v)) await update($, breakdown, () => v)
+      // Before the first response the bar draws from the breakdown's estimate, so a new
+      // session shows it at once; the first reported fill replaces it.
+      const s = snapshotOf(context) ?? {
+        tokens: b.totalTokens, window: context.window,
+        percent: Math.round((b.totalTokens / context.window) * 100), isEstimate: true,
+      }
+      if (!(await read($, snapshot))) await update($, snapshot, current => current ?? s)
     }
   } catch {
     // The card keeps the last breakdown.
@@ -756,6 +768,11 @@ export const register: Register = on => {
       const v = toLimits(usage.rateLimits)
       if (!same(await read($, rate), v)) await update($, rate, () => v)
     }
+    // A resumed session may already know its fill: the bar draws before the next turn.
+    {
+      const s = snapshotOf(usage.context)
+      if (s && !same(await read($, snapshot), s)) await update($, snapshot, () => s)
+    }
 
     // Nothing here waits on git, node or the network: the session starts at once.
     void loadModel($)
@@ -880,9 +897,9 @@ export const register: Register = on => {
       void loadGit($)
     }
 
-    const { tokens, window } = e.context
-    if (e.changed.includes('context') && tokens !== undefined) {
-      const s: Snapshot = { tokens, window, percent: e.context.percent ?? Math.round((tokens / window) * 100) }
+    const s = e.changed.includes('context') ? snapshotOf(e.context) : null
+    if (s) {
+      const { tokens, window } = s
       const before = (await read($, snapshot))?.tokens ?? 0
       {
         const v = s
@@ -1019,7 +1036,7 @@ export const register: Register = on => {
       const segs = segments(rows, filled)
       context = (
         <Box flexDirection="column">
-          {heading('Context', `${fmt(s.tokens)} of ${fmt(s.window)}`)}
+          {heading('Context', `${s.isEstimate ? '~' : ''}${fmt(s.tokens)} of ${fmt(s.window)}`)}
           <Box flexDirection="row" alignItems="center">
             {isTerminal ? (
               <Text>
