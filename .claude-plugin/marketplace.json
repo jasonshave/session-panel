@@ -1,0 +1,8 @@
+{
+  "name": "session-panel",
+  "owner": { "name": "jasonshave" },
+  "metadata": {
+    "description": "A Claude Code panel beside the conversation: repo, context, usage, weather and live subagent cards"
+  },
+  "plugins": [{ "name": "session-panel", "source": "./" }]
+}
