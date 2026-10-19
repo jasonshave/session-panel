@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import {
-  activityOf, agentTree, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
+  activityOf, addedHunk, agentTree, cacheColor, diffHunks, drawable, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
   parseStatus, planAfter, rainText, segments, span, stripWidth, tailPath, tempColor,
 } from '../hooks/register'
 
@@ -592,4 +592,71 @@ test("a child agent's card sits right under its parent's, a level in", async () 
     { ...base, id: 'o', startedAt: 0, parentId: 'gone' },
   ])
   expect(tree.map(r => `${r.a.id}${r.depth}`)).toEqual(['q0', 'p0', 'c1', 'o0'])
+})
+
+describe('a file in the list opens its changes', () => {
+  test('a pane shows its diff, follows it, and closes; the list unfolds past eight', async ($, on) => {
+    const status = ['# branch.oid abc1234', '# branch.head main',
+      ...Array.from({ length: 9 }, (_, i) => `1 .M N... 100644 100644 100644 h1 h2 src/f${i}.ts`)].join('\n')
+    let body = 'diff --git a/src/f0.ts b/src/f0.ts\r\nindex 1..2\r\n--- a/src/f0.ts\r\n+++ b/src/f0.ts\r\n@@ -1,2 +1,2 @@\r\n-old\r\n+new\r\n same\r\n'
+    on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 1_000_000 } } }) as never)
+    on('session.turns', () => ({ value: 0 }) as never)
+    on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
+    on('settings.read', () => ({ value: {} }) as never)
+    on('session.cwd', () => ({ value: 'C:/code/my-app' }) as never)
+    on('store.get', () => ({ value: undefined }) as never)
+    on('fs.read', () => ({ value: '{}' }) as never)
+    on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }) as never)
+    on('session.repo', () => ({ value: { root: 'C:/code/my-app', remote: null, internal: false } }) as never)
+    on('process.run', (_, e) => {
+      const argv = (e as { argv: string[] }).argv
+      return { value: { exitCode: 0, stdout: argv.includes('status') ? status : body, stderr: '' } } as never
+    })
+    const opened: string[] = []
+    on('ui.open', (_, e) => (opened.push(e.id), { value: { isPlaced: true } }) as never)
+    on('ui.close', () => ({ value: undefined }) as never)
+    const clock = mock.clock(on, { now: START })
+    on('session.start', (_, e) => ({ cwd: e.cwd }))
+    await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true } as never)
+    await clock.settle()
+    const DIFF = { ...PANE, requestId: 'session-panel-diff' }
+
+    const panel = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+    expect(await panel.find({ type: 'Text', text: /f8\.ts/ })).toBeUndefined()
+    await panel.press({ key: 'files-more' })
+    expect(JSON.stringify(await panel.drawn())).toContain('src/f8.ts')
+    await panel.press({ key: 'file-src/f0.ts' })
+    await clock.settle()
+    expect(opened).toContain('session-panel-diff')
+
+    const pane = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...DIFF })
+    const drawn = JSON.stringify(await pane.drawn())
+    expect(drawn).toContain('@@ -1,2 +1,2 @@\\n-old\\n+new\\n same')
+    expect(drawn).not.toContain('\\r')
+    await pane.unmount()
+
+    // Committed meanwhile: the next look at git says so in the open pane.
+    body = ''
+    await clock.advance(60_000)
+    await clock.settle()
+    const after = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...DIFF })
+    expect(JSON.stringify(await after.drawn())).toContain('No changes left')
+    await after.press({ key: 'diff-close' })
+    await clock.settle()
+    await after.unmount()
+    const closed = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...DIFF })
+    expect(JSON.stringify(await closed.drawn())).toContain('Click a file')
+    await closed.unmount()
+    await panel.unmount()
+  })
+
+  test('a long diff is cut at a whole hunk, and a new file reads as all added', async () => {
+    const hunk = (n: number) => `@@ -${n},1 +${n},1 @@\n-a\n+b`
+    const out = `diff --git a/x b/x\n--- a/x\n+++ b/x\n${hunk(1)}\n${hunk(9)}\n`
+    expect(diffHunks(out, 1000)).toEqual({ hunks: `${hunk(1)}\n${hunk(9)}`, isCut: false })
+    expect(diffHunks(out, 30)).toEqual({ hunks: hunk(1), isCut: true })
+    expect(diffHunks('Binary files a/x and b/x differ\n', 1000).hunks).toBe('')
+    expect(addedHunk('one\ntwo\n')).toBe('@@ -0,0 +1,2 @@\n+one\n+two')
+    expect(drawable('a\r\nb\u001bc')).toBe('a\nb\ufffdc')
+  })
 })

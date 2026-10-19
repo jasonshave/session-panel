@@ -6,6 +6,9 @@ doing and costing you without running `/context` or `/usage`.
 From the top, the panel shows:
 
 - **Repository**: name, branch, and up to 8 uncommitted files with their git status letter.
+  Click `+N more` to list them all. Click a file to see what changed in it since the last
+  commit, in a pane that opens beside the panel and keeps up as the file changes; Escape or its
+  `×` closes it. A new file shows as all added lines.
 - **Model**: the model and effort level the last request used.
 - **Context**: how full the context window is. The bar is split into colours by what fills it
   (messages, tools, MCP tools, system prompt, memory files and so on), and the list under it is
@@ -59,7 +62,8 @@ Three requests leave your machine:
 | `api.anthropic.com/api/oauth/usage` | The per-model weekly limit, every 5 minutes | Your Claude sign-in token, read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) |
 
 On your machine it runs `git status` in the session's folder when the session starts, after
-each turn and once a minute. Once per session (or when you resume one) it runs `node` on its
+each turn and once a minute, and while a file's changes are open, `git diff` on that file (or
+reads it, for a new file) at the same times. Once per session (or when you resume one) it runs `node` on its
 own `scripts/cache-expiry.js`, which reads the last 512 KB of the session's transcript to learn
 when the prompt cache was last used and whether it lasts 5 minutes or an hour. It reads your
 Claude Code settings for the effort level.

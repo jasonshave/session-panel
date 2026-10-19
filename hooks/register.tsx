@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit, Timer, TurnStepResult } from 'claude-code'
 
-import type { Agent, Breakdown, Cache, Day, Git, GitFile, Limit, Model, Scoped, Snapshot, Weather } from '../types'
+import type { Agent, Breakdown, Cache, Day, Diff, Git, GitFile, Limit, Model, Scoped, Snapshot, Weather } from '../types'
 
 const snapshot = atom({ plugin: 'session-panel', key: 'snapshot' } as const, null)
 const breakdown = atom({ plugin: 'session-panel', key: 'breakdown' } as const, null)
@@ -13,6 +13,8 @@ const git = atom({ plugin: 'session-panel', key: 'git' } as const, null)
 const weather = atom({ plugin: 'session-panel', key: 'weather' } as const, null)
 const agents = atom({ plugin: 'session-panel', key: 'agents' } as const, [])
 const tick = atom({ plugin: 'session-panel', key: 'tick' } as const, 0)
+const diff = atom({ plugin: 'session-panel', key: 'diff' } as const, null)
+const allFiles = atom({ plugin: 'session-panel', key: 'allFiles' } as const, false)
 
 // Claude Code's own folder: where the login and the session transcripts live.
 const configDir = async ($: EngineInterface) => {
@@ -132,13 +134,13 @@ export const tailPath = (path: string, width: number) =>
 
 const MAX_FILES = 8
 
-let repoName: { name: string; isRepo: boolean } | null = null
+let repoName: { name: string; isRepo: boolean; root?: string } | null = null
 
 const loadGit = async ($: EngineInterface) => {
   try {
     if (!repoName) {
       const repo = await $.session.repo()
-      repoName = repo ? { name: baseName(repo.root), isRepo: true } : { name: baseName(await $.session.cwd()), isRepo: false }
+      repoName = repo ? { name: baseName(repo.root), isRepo: true, root: repo.root } : { name: baseName(await $.session.cwd()), isRepo: false }
     }
     if (!repoName.isRepo) {
       {
@@ -152,10 +154,90 @@ const loadGit = async ($: EngineInterface) => {
     if (r.exitCode === 0) {
       const v = parseStatus(repoName.name, r.stdout)
       if (!same(await read($, git), v)) await update($, git, () => v)
+      // The open diff follows its file as it changes, through to its commit.
+      const d = await read($, diff)
+      if (d) await loadDiff($, v.files.find(f => f.path === d.path) ?? { code: d.code, path: d.path })
     }
   } catch {
     // git missing or slow: keep what was there.
   }
+}
+
+// ---- One file's changes, in a pane of their own -----------------------------
+
+const DIFF_PANE = 'session-panel-diff'
+// One Code element draws 100,000 characters at most; the rest of the pane needs a little.
+const MAX_DIFF_CHARS = 90_000
+
+// The Code element takes tab and newline as its only control characters: Windows line ends go,
+// and anything else a file holds is drawn as a replacement mark rather than refused.
+export const drawable = (text: string) =>
+  text.replace(/\r\n/g, '\n').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '�')
+
+// A new file as one hunk of added lines, so it reads as git would show it against nothing.
+export const addedHunk = (text: string) => {
+  const lines = text.replace(/\n$/, '').split('\n')
+  return `@@ -0,0 +1,${lines.length} @@\n${lines.map(l => `+${l}`).join('\n')}`
+}
+
+// `git diff` from its first hunk on, cut at the last whole hunk that fits: one cut midway does not draw.
+export const diffHunks = (out: string, max: number) => {
+  const start = out.startsWith('@@') ? 0 : out.indexOf('\n@@') + 1
+  const text = start > 0 || out.startsWith('@@') ? out.slice(start).replace(/\n$/, '') : ''
+  if (text.length <= max) return { hunks: text, isCut: false }
+  const at = text.lastIndexOf('\n@@', max)
+  return { hunks: at > 0 ? text.slice(0, at) : '', isCut: true }
+}
+
+const cut = (text: string) => {
+  const { hunks, isCut } = diffHunks(text, MAX_DIFF_CHARS)
+  return isCut ? { hunks, note: 'The diff is too long to draw whole: here is its start.' } : { hunks }
+}
+
+const diffOf = async ($: EngineInterface, f: GitFile): Promise<Diff> => {
+  const base = { path: f.path, code: f.code }
+  const root = repoName?.root ?? (await $.session.repo())?.root
+  if (!root) return { ...base, hunks: '', note: 'Not in a git repository.' }
+  if (f.path.endsWith('/')) return { ...base, hunks: '', note: 'A new folder: git lists it as one entry, not file by file.' }
+  if (f.code === '??') {
+    let text
+    try {
+      text = await $.fs.read(`${root}/${f.path}`)
+    } catch (err) {
+      return { ...base, hunks: '', note: `Could not read it: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    if (text.includes('\u0000')) return { ...base, hunks: '', note: 'A new binary file: it has no lines to show.' }
+    if (text === '') return { ...base, hunks: '', note: 'A new, empty file.' }
+    return { ...base, ...cut(drawable(addedHunk(text))) }
+  }
+  const r = await $.process.run(
+    ['git', '-c', 'core.quotePath=false', 'diff', 'HEAD', '--no-color', '--no-ext-diff', '--', f.path],
+    { cwd: root, timeoutMs: 10_000 },
+  )
+  if (r.exitCode !== 0) return { ...base, hunks: '', note: drawable(r.stderr.trim()) || 'git could not show its changes.' }
+  const shown = cut(drawable(r.stdout))
+  if (shown.hunks) return { ...base, ...shown }
+  return {
+    ...base, hunks: '',
+    note: r.stdout.includes('Binary files') ? 'A binary file: its changes have no lines to show.' : 'No changes left: it matches the last commit.',
+  }
+}
+
+// Reloads the open diff; one closed meanwhile, or moved on to another file, is left alone.
+const loadDiff = async ($: EngineInterface, f: GitFile) => {
+  const v = await diffOf($, f).catch((err: unknown) => ({
+    path: f.path, code: f.code, hunks: '', note: `git could not show its changes: ${err instanceof Error ? err.message : String(err)}`,
+  }))
+  const d = await read($, diff)
+  if (d && d.path === f.path && !same(d, v)) await update($, diff, () => v)
+}
+
+// A press on a file: the pane opens at once (only a press may seat it in a narrow terminal), then fills.
+const openDiff = async ($: EngineInterface, f: GitFile) => {
+  await update($, diff, () => ({ path: f.path, code: f.code, hunks: '', note: 'Reading its changes…' }))
+  const title = f.path.replace(/\/$/, '').split('/').pop() || f.path
+  void $.ui.open({ id: DIFF_PANE, title, focus: true, closeOnEscape: true, columns: 100 }).catch(() => undefined)
+  await loadDiff($, f)
 }
 
 // ---- Weather ---------------------------------------------------------------
@@ -946,11 +1028,46 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Closed by the person (Escape, or the dock's own close): nothing to keep up to date any more.
+  // The plugin's own close passes this hook by, so its × clears the file itself.
+  on('ui.close', async ($, e, next) => {
+    if (e.id === DIFF_PANE) await update($, diff, () => null).catch(() => undefined)
+    return next(e)
+  })
+
+  on('ui.render', { component: 'Pane', requestId: DIFF_PANE }, async ($, e) => {
+    const d = await read($, diff)
+    const { Box, Text, Button, Code } = $.ui.resolve(e)
+    if (!d) return <Text dimColor>Click a file in the session panel to see its changes.</Text>
+    const letter = fileLetter(d.code)
+    return (
+      <Box flexDirection="column" rowGap={1}>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text>
+            <Text color={FILE_COLOR[letter] ?? '#b4b4b4'}>{letter} </Text>
+            <Text bold>{tailPath(d.path, Math.max(8, e.props.bodyColumns - 4))}</Text>
+          </Text>
+          <Button
+            key="diff-close"
+            label="Close the diff"
+            plain
+            onPress={() => void update($, diff, () => null).then(() => $.ui.close({ id: DIFF_PANE }))}
+          >
+            <Text color="#ff5555">×</Text>
+          </Button>
+        </Box>
+        {d.note ? <Text dimColor>{d.note}</Text> : null}
+        {d.hunks ? <Code source={d.hunks} format="diff" path={d.path} /> : null}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     // Every read at once; the countdowns draw against the minute's tick, not a clock call.
-    const [s, m, g, w, c, rl, sc, t, bd, ag] = await Promise.all([
+    const [s, m, g, w, c, rl, sc, t, bd, ag, df, showAll] = await Promise.all([
       read($, snapshot), read($, model), read($, git), read($, weather),
       read($, cache), read($, rate), read($, scoped), read($, tick), read($, breakdown), read($, agents),
+      read($, diff), read($, allFiles),
     ])
     const now = Math.max(t, await $.clock.now())
     const limits = [
@@ -1044,16 +1161,26 @@ export const register: Register = on => {
               : <Text dimColor> · clean</Text>}
           </Text>
         ) : null}
-        {files.slice(0, MAX_FILES).map(f => {
+        {/* Each file opens its changes in the diff pane; the one open there is marked. */}
+        {(showAll ? files : files.slice(0, MAX_FILES)).map(f => {
           const letter = fileLetter(f.code)
           return (
-            <Text key={`file-${f.path}`}>
+            <Button key={`file-${f.path}`} label={`Show the changes in ${f.path}`} plain onPress={() => void openDiff($, f)}>
               <Text color={FILE_COLOR[letter] ?? '#b4b4b4'}>{letter} </Text>
-              <Text color="#b4b4b4">{tailPath(f.path, Math.max(8, columns - 2))}</Text>
-            </Text>
+              <Text color={df?.path === f.path ? MARKER : '#b4b4b4'}>{tailPath(f.path, Math.max(8, columns - 2))}</Text>
+            </Button>
           )
         })}
-        {files.length > MAX_FILES ? <Text dimColor>  +{files.length - MAX_FILES} more</Text> : null}
+        {files.length > MAX_FILES ? (
+          <Button
+            key="files-more"
+            label={showAll ? 'Show fewer files' : `Show all ${files.length} files`}
+            plain
+            onPress={() => void update($, allFiles, v => !v)}
+          >
+            <Text dimColor>  {showAll ? 'show fewer' : `+${files.length - MAX_FILES} more`}</Text>
+          </Button>
+        ) : null}
         {m ? (
           <Text>
             <Text color={MODEL_COLOR}>{m.name}</Text>
