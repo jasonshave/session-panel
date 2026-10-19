@@ -13,6 +13,7 @@ const git = atom({ plugin: 'session-panel', key: 'git' } as const, null)
 const weather = atom({ plugin: 'session-panel', key: 'weather' } as const, null)
 const agents = atom({ plugin: 'session-panel', key: 'agents' } as const, [])
 const tick = atom({ plugin: 'session-panel', key: 'tick' } as const, 0)
+const allFiles = atom({ plugin: 'session-panel', key: 'allFiles' } as const, false)
 
 // Claude Code's own folder: where the login and the session transcripts live.
 const configDir = async ($: EngineInterface) => {
@@ -155,6 +156,21 @@ const loadGit = async ($: EngineInterface) => {
     }
   } catch {
     // git missing or slow: keep what was there.
+  }
+}
+
+// ---- A file's changes, in Claude Code's own diff panel ---------------------
+
+// /diff takes no file, so the person picks it in the panel's own list. It also closes the panel
+// when it is up, which the panel cannot see from here: a press that closed it opens it again.
+const showDiffPanel = async ($: EngineInterface) => {
+  try {
+    for (let i = 0; i < 2; i++) {
+      const { text } = await $.command.run({ command: 'diff' })
+      if (!text || /shown/i.test(text)) return
+    }
+  } catch (err) {
+    $.ui.toast(`Could not open the diff panel: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
@@ -665,6 +681,32 @@ export const agentOrder = (list: readonly Agent[]) =>
   [...list].sort((a, b) =>
     (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1) || b.startedAt - a.startedAt)
 
+// The cards in order: running first, then the most recent, each agent's own children right under
+// it, a level deeper. One whose parent has left the panel stands at the top level.
+export const agentTree = (list: readonly Agent[]) => {
+  const ids = new Set(list.map(a => a.id))
+  const rows: { a: Agent; depth: number }[] = []
+  const add = (parent: string | undefined, depth: number) => {
+    for (const a of agentOrder(list.filter(x => (x.parentId && ids.has(x.parentId) ? x.parentId : undefined) === parent))) {
+      if (rows.some(r => r.a.id === a.id)) continue
+      rows.push({ a, depth })
+      add(a.id, depth + 1)
+    }
+  }
+  add(undefined, 0)
+  return rows
+}
+
+// The agents from the topmost down to `id`, each the one its child names as parent: the way
+// back up from the agent in view. A parent the panel never followed ends the chain.
+export const viewPath = (id: string, list: readonly Agent[]) => {
+  const path: Agent[] = []
+  for (let a = list.find(x => x.id === id); a && !path.includes(a); a = list.find(x => x.id === a!.parentId)) {
+    path.unshift(a)
+  }
+  return path
+}
+
 // Loops with an id the agent list does not name (a workflow's, the engine's own forks)
 // are not subagents the person started: looked up once, then left alone.
 const notAgents = new Set<string>()
@@ -690,7 +732,10 @@ const ensureAgent = async ($: EngineInterface, id: string, now: number) => {
     notAgents.add(id)
     return
   }
-  const a: Agent = { id, description: info.description, type: info.type, status: 'running', startedAt: now, steps: 0, tools: 0, output: 0 }
+  const a: Agent = {
+    id, description: info.description, type: info.type, parentId: info.parentId,
+    status: 'running', startedAt: now, steps: 0, tools: 0, output: 0,
+  }
   await update($, agents, list => (list.some(x => x.id === id) ? list : [...list, { ...a, hat: pickHat(id, list) }]))
 }
 
@@ -851,12 +896,12 @@ export const register: Register = on => {
       // Resumed, or its first step got here first: the same card goes on, hat and all.
       if (existing) {
         return list.map(x => (x.id !== id ? x : {
-          ...x, description: e.description, type: e.subagentType, model: r.model,
+          ...x, description: e.description, type: e.subagentType, parentId: e.parentAgentId ?? x.parentId, model: r.model,
           status: 'running' as const, endedAt: undefined, endedTurn: undefined,
         }))
       }
       const a: Agent = {
-        id, description: e.description, type: e.subagentType, model: r.model, status: 'running',
+        id, description: e.description, type: e.subagentType, parentId: e.parentAgentId, model: r.model, status: 'running',
         startedAt: now, steps: 0, tools: 0, output: 0, hat: pickHat(id, list),
       }
       return [...list, a]
@@ -919,9 +964,10 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     // Every read at once; the countdowns draw against the minute's tick, not a clock call.
-    const [s, m, g, w, c, rl, sc, t, bd, ag] = await Promise.all([
+    const [s, m, g, w, c, rl, sc, t, bd, ag, showAll] = await Promise.all([
       read($, snapshot), read($, model), read($, git), read($, weather),
       read($, cache), read($, rate), read($, scoped), read($, tick), read($, breakdown), read($, agents),
+      read($, allFiles),
     ])
     const now = Math.max(t, await $.clock.now())
     const limits = [
@@ -953,6 +999,46 @@ export const register: Register = on => {
         </Text>
       )
     }
+    // ---- Whose transcript is in view, and the way back up from an agent's to the main one, drawn over the agents
+    const viewed = e.props.view.agentId
+    // Only a press can switch the view; the engine says why when it will not (an agent it has
+    // already let go of, a teammate in a pane of its own).
+    const show = (agentId?: string) => () =>
+      void $.ui.view(agentId === undefined ? {} : { agentId })
+        .then(r => (r.deny ? $.ui.toast(r.deny) : undefined))
+        .catch(() => undefined)
+    let nav = null
+    if (viewed !== undefined) {
+      let path: { id: string; type: string }[] = viewPath(viewed, ag)
+      // One the panel never followed (opened from the tasks list, or dismissed): the engine names it.
+      if (path.length === 0) {
+        const info = (await $.agent.list().catch(() => [])).find(a => a.id === viewed)
+        path = [...(info?.parentId ? viewPath(info.parentId, ag) : []), { id: viewed, type: info?.type ?? 'agent' }]
+      }
+      const current = path[path.length - 1]!
+      const above = path.slice(0, -1)
+      // Past two agents above, the middle folds into one ….
+      const crumbs = above.length > 2 ? [above[0]!, null, above[above.length - 1]!] : above
+      const part = Math.max(6, Math.floor((columns - 6) / (crumbs.length + 1)) - 3)
+      nav = (
+        <Box flexDirection="row">
+          <Button key="view-main" label="Back to the main conversation" plain onPress={show()}>
+            <Text color={MARKER}>← main</Text>
+          </Button>
+          {crumbs.map((c, k) => (c === null ? <Text key={`crumb-${k}`} dimColor> › …</Text> : (
+            <Box key={`crumb-${c.id}`} flexDirection="row">
+              <Text dimColor> › </Text>
+              <Button key={`view-up-${c.id}`} label={`Show the ${c.type} agent`} plain onPress={show(c.id)}>
+                <Text color={MARKER}>{clip(c.type, part)}</Text>
+              </Button>
+            </Box>
+          )))}
+          <Text dimColor> › </Text>
+          <Text bold>{clip(current.type, part)}</Text>
+        </Box>
+      )
+    }
+
     const heading = (text: string, extra?: string) => (
       <Text>
         <Text bold color={HEADING}>{text}</Text>
@@ -975,16 +1061,26 @@ export const register: Register = on => {
               : <Text dimColor> · clean</Text>}
           </Text>
         ) : null}
-        {files.slice(0, MAX_FILES).map(f => {
+        {/* Each file opens Claude Code's diff panel, where its changes are a click away. */}
+        {(showAll ? files : files.slice(0, MAX_FILES)).map(f => {
           const letter = fileLetter(f.code)
           return (
-            <Text key={`file-${f.path}`}>
+            <Button key={`file-${f.path}`} label={`Show the changes in ${f.path}`} plain onPress={() => void showDiffPanel($)}>
               <Text color={FILE_COLOR[letter] ?? '#b4b4b4'}>{letter} </Text>
               <Text color="#b4b4b4">{tailPath(f.path, Math.max(8, columns - 2))}</Text>
-            </Text>
+            </Button>
           )
         })}
-        {files.length > MAX_FILES ? <Text dimColor>  +{files.length - MAX_FILES} more</Text> : null}
+        {files.length > MAX_FILES ? (
+          <Button
+            key="files-more"
+            label={showAll ? 'Show fewer files' : `Show all ${files.length} files`}
+            plain
+            onPress={() => void update($, allFiles, v => !v)}
+          >
+            <Text dimColor>  {showAll ? 'show fewer' : `+${files.length - MAX_FILES} more`}</Text>
+          </Button>
+        ) : null}
         {m ? (
           <Text>
             <Text color={MODEL_COLOR}>{m.name}</Text>
@@ -1134,14 +1230,21 @@ export const register: Register = on => {
     const crewList = ag.filter(a => a.status === 'running' || now - (a.endedAt ?? now) < AGENT_LINGER_MS)
     if (crewList.length > 0) {
       const running = crewList.filter(a => a.status === 'running').length
-      const width = Math.max(12, columns - CLAWD_WIDTH - 1)
+
       const frame = Math.floor(now / 1000) % 2
-      const shown = agentOrder(crewList).slice(0, MAX_AGENTS)
+      const ordered = agentTree(crewList)
+      const shown = ordered.slice(0, MAX_AGENTS)
+      // The agent in view keeps its card, even when five others would push it off.
+      const hidden = ordered.slice(MAX_AGENTS).find(r => r.a.id === viewed)
+      if (hidden) shown[MAX_AGENTS - 1] = hidden
       crew = (
         <Box flexDirection="column">
           {heading('Agents', running > 0 ? `${running} running` : 'all finished')}
           <Box flexDirection="column" rowGap={1}>
-            {shown.map(a => {
+            {shown.map(({ a, depth }) => {
+              // A child's card is set in under its parent's, three columns a level, three levels at most.
+              const indent = Math.min(depth, 3) * 3
+              const width = Math.max(12, columns - indent - CLAWD_WIDTH - 1)
               const color = AGENT_COLOR[a.status]
               const hat = HATS[a.hat ?? pickHat(a.id, [])] ?? HATS[0]!
               const elapsed = fmtElapsed((a.endedAt ?? now) - a.startedAt)
@@ -1157,8 +1260,12 @@ export const register: Register = on => {
                 : <Text dimColor>{stateText}</Text>
               // A finished card can be dismissed before it leaves by itself.
               const isOver = a.status !== 'running'
+              // Its name opens its transcript; pressed again, the view goes back to whoever spawned it.
+              const isViewed = a.id === viewed
+              const open = show(isViewed ? a.parentId : a.id)
+              const openLabel = isViewed ? `Back from the ${a.type} agent` : `Show the ${a.type} agent`
               // The type, then the model while there is room, beside the state (and its X) on one line.
-              const room = Math.max(4, width - stateText.length - 1 - (isOver ? 2 : 0))
+              const room = Math.max(4, width - stateText.length - 1 - (isOver ? 2 : 0) - (isViewed ? 2 : 0))
               const typeText = clip(a.type, room)
               const modelText = a.model && room - typeText.length > 4
                 ? clip(` · ${modelName(a.model)}`, room - typeText.length)
@@ -1172,6 +1279,13 @@ export const register: Register = on => {
               const ctxPct = a.context === undefined ? 0 : Math.round((a.context / win) * 100)
               return (
                 <Box key={`agent-${a.id}`} flexDirection="row" columnGap={1}>
+                  {depth > 0 ? (
+                    <Box flexDirection="column" width={indent - 1} flexShrink={0} alignItems="flex-end">
+                      <Text dimColor>│ </Text>
+                      <Text dimColor>│ </Text>
+                      <Text dimColor>╰─</Text>
+                    </Box>
+                  ) : null}
                   <Box flexDirection="column" width={CLAWD_WIDTH} flexShrink={0}>
                     {hat.rows.map((row, k) => (
                       <Text key={`hat${k}`} color={hat.color} dimColor={a.status !== 'running'}>{row}</Text>
@@ -1182,10 +1296,11 @@ export const register: Register = on => {
                   </Box>
                   <Box flexDirection="column" flexGrow={1}>
                     <Box flexDirection="row" justifyContent="space-between">
-                      <Text>
+                      <Button key={`view-${a.id}`} label={openLabel} plain onPress={open}>
+                        {isViewed ? <Text color={MARKER}>▶ </Text> : null}
                         <Text bold>{typeText}</Text>
                         {modelText ? <Text dimColor>{modelText}</Text> : null}
-                      </Text>
+                      </Button>
                       {isOver ? (
                         <Box flexDirection="row" columnGap={1}>
                           {state}
@@ -1195,7 +1310,7 @@ export const register: Register = on => {
                             plain
                             onPress={() => void update($, agents, list => list.filter(x => x.id !== a.id))}
                           >
-                            <Text color="#ff5555">✕</Text>
+                            <Text color="#ff5555">×</Text>
                           </Button>
                         </Box>
                       ) : state}
@@ -1239,6 +1354,7 @@ export const register: Register = on => {
         {context}
         {usage}
         {forecast}
+        {nav}
         {crew}
       </Box>
     )

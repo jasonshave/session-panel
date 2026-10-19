@@ -37,6 +37,7 @@ export type Agent = {
   id: string
   description: string
   type: string
+  parentId?: string // the agent that spawned it; absent when the main conversation did
   model?: string // the model id its last request named
   status: 'running' | 'done' | 'failed' | 'stopped'
   startedAt: number // epoch ms
@@ -75,6 +76,8 @@ declare module 'claude-code' {
       cache: Cache | null
       model: Model | null
       git: Git | null
+      // The whole list of uncommitted files, not just the first few.
+      allFiles: boolean
       weather: Weather | null
       agents: Agent[]
       // The moment the countdowns are drawn against: written each minute, and each second

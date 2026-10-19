@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import {
-  activityOf, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
+  activityOf, agentTree, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
   parseStatus, planAfter, rainText, segments, span, stripWidth, tailPath, tempColor,
 } from '../hooks/register'
 
@@ -556,4 +556,72 @@ test('a finished agent can be dismissed with its X before it leaves by itself', 
     }
     await ui.unmount()
   }
+})
+
+test('an agent card opens its transcript, and the path at the top leads back up', async ($, on) => {
+  mock.clock(on, { now: START })
+  on('agent.spawn', (_, e) => ({ model: 'claude-haiku-4-5', agentId: e.parentAgentId ? 'agent-c' : 'agent-p' }))
+  on('agent.list', () => ({ value: [] }) as never)
+  const views: (string | undefined)[] = []
+  on('ui.view', (_, e) => (views.push(e.agentId), { value: {} }) as never)
+  await $.agent.spawn({ prompt: 'p', description: 'Plan the move', subagentType: 'general-purpose' } as never)
+  await $.agent.spawn({ prompt: 'p', description: 'Find callers', subagentType: 'Explore', parentAgentId: 'agent-p' } as never)
+
+  const main = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+  expect(await main.find({ type: 'Text', text: /← main/ })).toBeUndefined()
+  await main.press({ key: 'view-agent-c' })
+  expect(views).toEqual(['agent-c'])
+  await main.unmount()
+
+  const inChild = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE, props: { ...PANE.props, view: { agentId: 'agent-c' } } })
+  expect(await inChild.find({ type: 'Text', text: /▶/ })).toBeDefined()
+  await inChild.press({ key: 'view-up-agent-p' })
+  await inChild.press({ key: 'view-agent-c' }) // its own card again: back to the agent that spawned it
+  await inChild.press({ key: 'view-main' })
+  expect(views).toEqual(['agent-c', 'agent-p', 'agent-p', undefined])
+  await inChild.unmount()
+})
+
+test("a child agent's card sits right under its parent's, a level in", async () => {
+  const base = { description: 'd', type: 'Explore', status: 'running' as const, steps: 0, tools: 0, output: 0 }
+  const tree = agentTree([
+    { ...base, id: 'p', startedAt: 1 },
+    { ...base, id: 'c', startedAt: 3, parentId: 'p' },
+    { ...base, id: 'q', startedAt: 2 },
+    // Its parent has left the panel: it stands at the top level.
+    { ...base, id: 'o', startedAt: 0, parentId: 'gone' },
+  ])
+  expect(tree.map(r => `${r.a.id}${r.depth}`)).toEqual(['q0', 'p0', 'c1', 'o0'])
+})
+
+test("a file opens Claude Code's diff panel, and the list unfolds past eight", async ($, on) => {
+  const status = ['# branch.oid abc1234', '# branch.head main',
+    ...Array.from({ length: 9 }, (_, i) => `1 .M N... 100644 100644 100644 h1 h2 src/f${i}.ts`)].join('\n')
+  on('session.usage', () => ({ value: { startedAt: 0, rateLimits: [], context: { window: 1_000_000 } } }) as never)
+  on('session.turns', () => ({ value: 0 }) as never)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }) as never)
+  on('settings.read', () => ({ value: {} }) as never)
+  on('session.cwd', () => ({ value: 'C:/code/my-app' }) as never)
+  on('store.get', () => ({ value: undefined }) as never)
+  on('fs.read', () => ({ value: '{}' }) as never)
+  on('http.fetch', () => ({ value: { status: 500, ok: false, headers: {}, text: '' } }) as never)
+  on('session.repo', () => ({ value: { root: 'C:/code/my-app', remote: null, internal: false } }) as never)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: status, stderr: '' } }) as never)
+  // The panel was up, so the first /diff closes it: the press opens it again.
+  const answers = ['Diff panel hidden', 'Diff panel shown']
+  const runs: string[] = []
+  on('command.run', (_, e) => (runs.push(e.command), { text: answers.shift() }))
+  const clock = mock.clock(on, { now: START })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true } as never)
+  await clock.settle()
+
+  const panel = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+  expect(JSON.stringify(await panel.drawn())).not.toContain('src/f8.ts')
+  await panel.press({ key: 'files-more' })
+  expect(JSON.stringify(await panel.drawn())).toContain('src/f8.ts')
+  await panel.press({ key: 'file-src/f0.ts' })
+  await clock.settle()
+  expect(runs).toEqual(['diff', 'diff'])
+  await panel.unmount()
 })

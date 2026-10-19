@@ -6,6 +6,9 @@ doing and costing you without running `/context` or `/usage`.
 From the top, the panel shows:
 
 - **Repository**: name, branch, and up to 8 uncommitted files with their git status letter.
+  Click `+N more` to list them all. Click a file to open Claude Code's diff panel (`/diff`),
+  then pick the file in its list: the diff panel cannot be opened at one file. It opens as a
+  tab in the same place as this panel; widen that area to read a diff comfortably.
 - **Model**: the model and effort level the last request used.
 - **Context**: how full the context window is. The bar is split into colours by what fills it
   (messages, tools, MCP tools, system prompt, memory files and so on), and the list under it is
@@ -19,7 +22,15 @@ From the top, the panel shows:
   own context use, its tool calls and how much it has written. Each card has Claude Code's
   mascot wearing its own hat, so two agents on screen never look alike; it is orange while the
   agent works, grey once it finishes or is stopped, and red if it failed. Up to five cards show
-  at once, running agents first, and a finished agent stays for 3 minutes.
+  at once, running agents first, and a finished agent stays for 3 minutes. An agent started by
+  another agent has its card set in under that agent's, joined to it by a line.
+
+  Click an agent's name to see its conversation in place of the main one; its card is
+  marked `▶` while you do. A line just above the agents then leads back: `← main` returns to
+  the main conversation, and the name of each agent above it (the one that started it, and so
+  on) opens that agent's. Clicking the marked card again goes back up one level. Claude Code
+  lets go of a finished agent after a while, and from then on its conversation cannot be
+  opened; the panel says so when that happens.
 
 ## Install
 
