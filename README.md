@@ -6,9 +6,9 @@ doing and costing you without running `/context` or `/usage`.
 From the top, the panel shows:
 
 - **Repository**: name, branch, and up to 8 uncommitted files with their git status letter.
-  Click `+N more` to list them all. Click a file to see what changed in it since the last
-  commit, in a pane that opens beside the panel and keeps up as the file changes; Escape or its
-  `×` closes it. A new file shows as all added lines.
+  Click `+N more` to list them all. Click a file to open Claude Code's diff panel (`/diff`),
+  then pick the file in its list: the diff panel cannot be opened at one file. It opens as a
+  tab in the same place as this panel; widen that area to read a diff comfortably.
 - **Model**: the model and effort level the last request used.
 - **Context**: how full the context window is. The bar is split into colours by what fills it
   (messages, tools, MCP tools, system prompt, memory files and so on), and the list under it is
@@ -26,7 +26,7 @@ From the top, the panel shows:
   another agent has its card set in under that agent's, joined to it by a line.
 
   Click an agent's name to see its conversation in place of the main one; its card is
-  marked `▶` while you do. A line at the top of the panel then leads back: `← main` returns to
+  marked `▶` while you do. A line just above the agents then leads back: `← main` returns to
   the main conversation, and the name of each agent above it (the one that started it, and so
   on) opens that agent's. Clicking the marked card again goes back up one level. Claude Code
   lets go of a finished agent after a while, and from then on its conversation cannot be
@@ -62,8 +62,7 @@ Three requests leave your machine:
 | `api.anthropic.com/api/oauth/usage` | The per-model weekly limit, every 5 minutes | Your Claude sign-in token, read from `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) |
 
 On your machine it runs `git status` in the session's folder when the session starts, after
-each turn and once a minute, and while a file's changes are open, `git diff` on that file (or
-reads it, for a new file) at the same times. Once per session (or when you resume one) it runs `node` on its
+each turn and once a minute. Once per session (or when you resume one) it runs `node` on its
 own `scripts/cache-expiry.js`, which reads the last 512 KB of the session's transcript to learn
 when the prompt cache was last used and whether it lasts 5 minutes or an hour. It reads your
 Claude Code settings for the effort level.

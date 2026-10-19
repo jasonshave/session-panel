@@ -29,10 +29,6 @@ export type Model = { name: string; effort?: string }
 // and its path from the repository root.
 export type GitFile = { code: string; path: string }
 
-// One file's changes since the last commit, as the diff pane draws them: unified-diff hunks, a
-// note in their place (a binary file, a folder, nothing left to show), or both when cut short.
-export type Diff = { path: string; code: string; hunks: string; note?: string }
-
 // The repository (or folder) the session runs in, and what is uncommitted on its branch.
 export type Git = { name: string; branch?: string; isDetached?: boolean; changes: number; files: GitFile[] }
 
@@ -80,8 +76,6 @@ declare module 'claude-code' {
       cache: Cache | null
       model: Model | null
       git: Git | null
-      // The file whose changes the diff pane shows; null while it is closed.
-      diff: Diff | null
       // The whole list of uncommitted files, not just the first few.
       allFiles: boolean
       weather: Weather | null
