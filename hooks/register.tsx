@@ -665,6 +665,22 @@ export const agentOrder = (list: readonly Agent[]) =>
   [...list].sort((a, b) =>
     (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1) || b.startedAt - a.startedAt)
 
+// The cards in order: running first, then the most recent, each agent's own children right under
+// it, a level deeper. One whose parent has left the panel stands at the top level.
+export const agentTree = (list: readonly Agent[]) => {
+  const ids = new Set(list.map(a => a.id))
+  const rows: { a: Agent; depth: number }[] = []
+  const add = (parent: string | undefined, depth: number) => {
+    for (const a of agentOrder(list.filter(x => (x.parentId && ids.has(x.parentId) ? x.parentId : undefined) === parent))) {
+      if (rows.some(r => r.a.id === a.id)) continue
+      rows.push({ a, depth })
+      add(a.id, depth + 1)
+    }
+  }
+  add(undefined, 0)
+  return rows
+}
+
 // The agents from the topmost down to `id`, each the one its child names as parent: the way
 // back up from the agent in view. A parent the panel never followed ends the chain.
 export const viewPath = (id: string, list: readonly Agent[]) => {
@@ -1187,18 +1203,21 @@ export const register: Register = on => {
     const crewList = ag.filter(a => a.status === 'running' || now - (a.endedAt ?? now) < AGENT_LINGER_MS)
     if (crewList.length > 0) {
       const running = crewList.filter(a => a.status === 'running').length
-      const width = Math.max(12, columns - CLAWD_WIDTH - 1)
+
       const frame = Math.floor(now / 1000) % 2
-      const ordered = agentOrder(crewList)
+      const ordered = agentTree(crewList)
       const shown = ordered.slice(0, MAX_AGENTS)
       // The agent in view keeps its card, even when five others would push it off.
-      const hidden = ordered.slice(MAX_AGENTS).find(a => a.id === viewed)
+      const hidden = ordered.slice(MAX_AGENTS).find(r => r.a.id === viewed)
       if (hidden) shown[MAX_AGENTS - 1] = hidden
       crew = (
         <Box flexDirection="column">
           {heading('Agents', running > 0 ? `${running} running` : 'all finished')}
           <Box flexDirection="column" rowGap={1}>
-            {shown.map(a => {
+            {shown.map(({ a, depth }) => {
+              // A child's card is set in under its parent's, three columns a level, three levels at most.
+              const indent = Math.min(depth, 3) * 3
+              const width = Math.max(12, columns - indent - CLAWD_WIDTH - 1)
               const color = AGENT_COLOR[a.status]
               const hat = HATS[a.hat ?? pickHat(a.id, [])] ?? HATS[0]!
               const elapsed = fmtElapsed((a.endedAt ?? now) - a.startedAt)
@@ -1214,7 +1233,7 @@ export const register: Register = on => {
                 : <Text dimColor>{stateText}</Text>
               // A finished card can be dismissed before it leaves by itself.
               const isOver = a.status !== 'running'
-              // Its card opens its transcript; pressed again, the view goes back to whoever spawned it.
+              // Its name opens its transcript; pressed again, the view goes back to whoever spawned it.
               const isViewed = a.id === viewed
               const open = show(isViewed ? a.parentId : a.id)
               const openLabel = isViewed ? `Back from the ${a.type} agent` : `Show the ${a.type} agent`
@@ -1233,6 +1252,13 @@ export const register: Register = on => {
               const ctxPct = a.context === undefined ? 0 : Math.round((a.context / win) * 100)
               return (
                 <Box key={`agent-${a.id}`} flexDirection="row" columnGap={1}>
+                  {depth > 0 ? (
+                    <Box flexDirection="column" width={indent - 1} flexShrink={0} alignItems="flex-end">
+                      <Text dimColor>│ </Text>
+                      <Text dimColor>│ </Text>
+                      <Text dimColor>╰─</Text>
+                    </Box>
+                  ) : null}
                   <Box flexDirection="column" width={CLAWD_WIDTH} flexShrink={0}>
                     {hat.rows.map((row, k) => (
                       <Text key={`hat${k}`} color={hat.color} dimColor={a.status !== 'running'}>{row}</Text>
@@ -1257,14 +1283,12 @@ export const register: Register = on => {
                             plain
                             onPress={() => void update($, agents, list => list.filter(x => x.id !== a.id))}
                           >
-                            <Text color="#ff5555">✕</Text>
+                            <Text color="#ff5555">×</Text>
                           </Button>
                         </Box>
                       ) : state}
                     </Box>
-                    <Button key={`view-task-${a.id}`} label={openLabel} plain onPress={open}>
-                      <Text>{a.description}</Text>
-                    </Button>
+                    <Text>{a.description}</Text>
                     {a.status === 'running' && a.activity ? (
                       <Text>
                         <Text dimColor>now </Text>

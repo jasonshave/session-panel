@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import {
-  activityOf, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
+  activityOf, agentTree, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
   parseStatus, planAfter, rainText, segments, span, stripWidth, tailPath, tempColor,
 } from '../hooks/register'
 
@@ -569,7 +569,7 @@ test('an agent card opens its transcript, and the path at the top leads back up'
 
   const main = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
   expect(await main.find({ type: 'Text', text: /← main/ })).toBeUndefined()
-  await main.press({ key: 'view-task-agent-c' })
+  await main.press({ key: 'view-agent-c' })
   expect(views).toEqual(['agent-c'])
   await main.unmount()
 
@@ -580,4 +580,16 @@ test('an agent card opens its transcript, and the path at the top leads back up'
   await inChild.press({ key: 'view-main' })
   expect(views).toEqual(['agent-c', 'agent-p', 'agent-p', undefined])
   await inChild.unmount()
+})
+
+test("a child agent's card sits right under its parent's, a level in", async () => {
+  const base = { description: 'd', type: 'Explore', status: 'running' as const, steps: 0, tools: 0, output: 0 }
+  const tree = agentTree([
+    { ...base, id: 'p', startedAt: 1 },
+    { ...base, id: 'c', startedAt: 3, parentId: 'p' },
+    { ...base, id: 'q', startedAt: 2 },
+    // Its parent has left the panel: it stands at the top level.
+    { ...base, id: 'o', startedAt: 0, parentId: 'gone' },
+  ])
+  expect(tree.map(r => `${r.a.id}${r.depth}`)).toEqual(['q0', 'p0', 'c1', 'o0'])
 })

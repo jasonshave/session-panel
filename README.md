@@ -19,9 +19,10 @@ From the top, the panel shows:
   own context use, its tool calls and how much it has written. Each card has Claude Code's
   mascot wearing its own hat, so two agents on screen never look alike; it is orange while the
   agent works, grey once it finishes or is stopped, and red if it failed. Up to five cards show
-  at once, running agents first, and a finished agent stays for 3 minutes.
+  at once, running agents first, and a finished agent stays for 3 minutes. An agent started by
+  another agent has its card set in under that agent's, joined to it by a line.
 
-  Click an agent's name or task to see its conversation in place of the main one; its card is
+  Click an agent's name to see its conversation in place of the main one; its card is
   marked `▶` while you do. A line at the top of the panel then leads back: `← main` returns to
   the main conversation, and the name of each agent above it (the one that started it, and so
   on) opens that agent's. Clicking the marked card again goes back up one level. Claude Code
