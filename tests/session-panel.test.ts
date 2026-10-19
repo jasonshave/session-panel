@@ -557,3 +557,27 @@ test('a finished agent can be dismissed with its X before it leaves by itself', 
     await ui.unmount()
   }
 })
+
+test('an agent card opens its transcript, and the path at the top leads back up', async ($, on) => {
+  mock.clock(on, { now: START })
+  on('agent.spawn', (_, e) => ({ model: 'claude-haiku-4-5', agentId: e.parentAgentId ? 'agent-c' : 'agent-p' }))
+  on('agent.list', () => ({ value: [] }) as never)
+  const views: (string | undefined)[] = []
+  on('ui.view', (_, e) => (views.push(e.agentId), { value: {} }) as never)
+  await $.agent.spawn({ prompt: 'p', description: 'Plan the move', subagentType: 'general-purpose' } as never)
+  await $.agent.spawn({ prompt: 'p', description: 'Find callers', subagentType: 'Explore', parentAgentId: 'agent-p' } as never)
+
+  const main = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+  expect(await main.find({ type: 'Text', text: /← main/ })).toBeUndefined()
+  await main.press({ key: 'view-task-agent-c' })
+  expect(views).toEqual(['agent-c'])
+  await main.unmount()
+
+  const inChild = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE, props: { ...PANE.props, view: { agentId: 'agent-c' } } })
+  expect(await inChild.find({ type: 'Text', text: /▶/ })).toBeDefined()
+  await inChild.press({ key: 'view-up-agent-p' })
+  await inChild.press({ key: 'view-agent-c' }) // its own card again: back to the agent that spawned it
+  await inChild.press({ key: 'view-main' })
+  expect(views).toEqual(['agent-c', 'agent-p', 'agent-p', undefined])
+  await inChild.unmount()
+})

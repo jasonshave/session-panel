@@ -665,6 +665,16 @@ export const agentOrder = (list: readonly Agent[]) =>
   [...list].sort((a, b) =>
     (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1) || b.startedAt - a.startedAt)
 
+// The agents from the topmost down to `id`, each the one its child names as parent: the way
+// back up from the agent in view. A parent the panel never followed ends the chain.
+export const viewPath = (id: string, list: readonly Agent[]) => {
+  const path: Agent[] = []
+  for (let a = list.find(x => x.id === id); a && !path.includes(a); a = list.find(x => x.id === a!.parentId)) {
+    path.unshift(a)
+  }
+  return path
+}
+
 // Loops with an id the agent list does not name (a workflow's, the engine's own forks)
 // are not subagents the person started: looked up once, then left alone.
 const notAgents = new Set<string>()
@@ -690,7 +700,10 @@ const ensureAgent = async ($: EngineInterface, id: string, now: number) => {
     notAgents.add(id)
     return
   }
-  const a: Agent = { id, description: info.description, type: info.type, status: 'running', startedAt: now, steps: 0, tools: 0, output: 0 }
+  const a: Agent = {
+    id, description: info.description, type: info.type, parentId: info.parentId,
+    status: 'running', startedAt: now, steps: 0, tools: 0, output: 0,
+  }
   await update($, agents, list => (list.some(x => x.id === id) ? list : [...list, { ...a, hat: pickHat(id, list) }]))
 }
 
@@ -851,12 +864,12 @@ export const register: Register = on => {
       // Resumed, or its first step got here first: the same card goes on, hat and all.
       if (existing) {
         return list.map(x => (x.id !== id ? x : {
-          ...x, description: e.description, type: e.subagentType, model: r.model,
+          ...x, description: e.description, type: e.subagentType, parentId: e.parentAgentId ?? x.parentId, model: r.model,
           status: 'running' as const, endedAt: undefined, endedTurn: undefined,
         }))
       }
       const a: Agent = {
-        id, description: e.description, type: e.subagentType, model: r.model, status: 'running',
+        id, description: e.description, type: e.subagentType, parentId: e.parentAgentId, model: r.model, status: 'running',
         startedAt: now, steps: 0, tools: 0, output: 0, hat: pickHat(id, list),
       }
       return [...list, a]
@@ -953,6 +966,46 @@ export const register: Register = on => {
         </Text>
       )
     }
+    // ---- Whose transcript is in view, and the way back up from an agent's to the main one
+    const viewed = e.props.view.agentId
+    // Only a press can switch the view; the engine says why when it will not (an agent it has
+    // already let go of, a teammate in a pane of its own).
+    const show = (agentId?: string) => () =>
+      void $.ui.view(agentId === undefined ? {} : { agentId })
+        .then(r => (r.deny ? $.ui.toast(r.deny) : undefined))
+        .catch(() => undefined)
+    let nav = null
+    if (viewed !== undefined) {
+      let path: { id: string; type: string }[] = viewPath(viewed, ag)
+      // One the panel never followed (opened from the tasks list, or dismissed): the engine names it.
+      if (path.length === 0) {
+        const info = (await $.agent.list().catch(() => [])).find(a => a.id === viewed)
+        path = [...(info?.parentId ? viewPath(info.parentId, ag) : []), { id: viewed, type: info?.type ?? 'agent' }]
+      }
+      const current = path[path.length - 1]!
+      const above = path.slice(0, -1)
+      // Past two agents above, the middle folds into one ….
+      const crumbs = above.length > 2 ? [above[0]!, null, above[above.length - 1]!] : above
+      const part = Math.max(6, Math.floor((columns - 6) / (crumbs.length + 1)) - 3)
+      nav = (
+        <Box flexDirection="row">
+          <Button key="view-main" label="Back to the main conversation" plain onPress={show()}>
+            <Text color={MARKER}>← main</Text>
+          </Button>
+          {crumbs.map((c, k) => (c === null ? <Text key={`crumb-${k}`} dimColor> › …</Text> : (
+            <Box key={`crumb-${c.id}`} flexDirection="row">
+              <Text dimColor> › </Text>
+              <Button key={`view-up-${c.id}`} label={`Show the ${c.type} agent`} plain onPress={show(c.id)}>
+                <Text color={MARKER}>{clip(c.type, part)}</Text>
+              </Button>
+            </Box>
+          )))}
+          <Text dimColor> › </Text>
+          <Text bold>{clip(current.type, part)}</Text>
+        </Box>
+      )
+    }
+
     const heading = (text: string, extra?: string) => (
       <Text>
         <Text bold color={HEADING}>{text}</Text>
@@ -1136,7 +1189,11 @@ export const register: Register = on => {
       const running = crewList.filter(a => a.status === 'running').length
       const width = Math.max(12, columns - CLAWD_WIDTH - 1)
       const frame = Math.floor(now / 1000) % 2
-      const shown = agentOrder(crewList).slice(0, MAX_AGENTS)
+      const ordered = agentOrder(crewList)
+      const shown = ordered.slice(0, MAX_AGENTS)
+      // The agent in view keeps its card, even when five others would push it off.
+      const hidden = ordered.slice(MAX_AGENTS).find(a => a.id === viewed)
+      if (hidden) shown[MAX_AGENTS - 1] = hidden
       crew = (
         <Box flexDirection="column">
           {heading('Agents', running > 0 ? `${running} running` : 'all finished')}
@@ -1157,8 +1214,12 @@ export const register: Register = on => {
                 : <Text dimColor>{stateText}</Text>
               // A finished card can be dismissed before it leaves by itself.
               const isOver = a.status !== 'running'
+              // Its card opens its transcript; pressed again, the view goes back to whoever spawned it.
+              const isViewed = a.id === viewed
+              const open = show(isViewed ? a.parentId : a.id)
+              const openLabel = isViewed ? `Back from the ${a.type} agent` : `Show the ${a.type} agent`
               // The type, then the model while there is room, beside the state (and its X) on one line.
-              const room = Math.max(4, width - stateText.length - 1 - (isOver ? 2 : 0))
+              const room = Math.max(4, width - stateText.length - 1 - (isOver ? 2 : 0) - (isViewed ? 2 : 0))
               const typeText = clip(a.type, room)
               const modelText = a.model && room - typeText.length > 4
                 ? clip(` · ${modelName(a.model)}`, room - typeText.length)
@@ -1182,10 +1243,11 @@ export const register: Register = on => {
                   </Box>
                   <Box flexDirection="column" flexGrow={1}>
                     <Box flexDirection="row" justifyContent="space-between">
-                      <Text>
+                      <Button key={`view-${a.id}`} label={openLabel} plain onPress={open}>
+                        {isViewed ? <Text color={MARKER}>▶ </Text> : null}
                         <Text bold>{typeText}</Text>
                         {modelText ? <Text dimColor>{modelText}</Text> : null}
-                      </Text>
+                      </Button>
                       {isOver ? (
                         <Box flexDirection="row" columnGap={1}>
                           {state}
@@ -1200,7 +1262,9 @@ export const register: Register = on => {
                         </Box>
                       ) : state}
                     </Box>
-                    <Text>{a.description}</Text>
+                    <Button key={`view-task-${a.id}`} label={openLabel} plain onPress={open}>
+                      <Text>{a.description}</Text>
+                    </Button>
                     {a.status === 'running' && a.activity ? (
                       <Text>
                         <Text dimColor>now </Text>
@@ -1235,6 +1299,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" rowGap={1}>
+        {nav}
         {header}
         {context}
         {usage}

@@ -21,6 +21,13 @@ From the top, the panel shows:
   agent works, grey once it finishes or is stopped, and red if it failed. Up to five cards show
   at once, running agents first, and a finished agent stays for 3 minutes.
 
+  Click an agent's name or task to see its conversation in place of the main one; its card is
+  marked `▶` while you do. A line at the top of the panel then leads back: `← main` returns to
+  the main conversation, and the name of each agent above it (the one that started it, and so
+  on) opens that agent's. Clicking the marked card again goes back up one level. Claude Code
+  lets go of a finished agent after a while, and from then on its conversation cannot be
+  opened; the panel says so when that happens.
+
 ## Install
 
 Type this at the prompt of a Claude Code session in your terminal:
