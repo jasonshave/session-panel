@@ -14,6 +14,7 @@ const weather = atom({ plugin: 'session-panel', key: 'weather' } as const, null)
 const agents = atom({ plugin: 'session-panel', key: 'agents' } as const, [])
 const tick = atom({ plugin: 'session-panel', key: 'tick' } as const, 0)
 const allFiles = atom({ plugin: 'session-panel', key: 'allFiles' } as const, false)
+const cost = atom({ plugin: 'session-panel', key: 'cost' } as const, null)
 
 // Claude Code's own folder: where the login and the session transcripts live.
 const configDir = async ($: EngineInterface) => {
@@ -69,6 +70,14 @@ export const modelName = (id: string) => {
   const [, family = '', major, minor] = m
   return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${major}.${minor}`
 }
+
+// The session's spend in dollars: cents under $1000, whole dollars past it.
+export const fmtCost = (usd: number) =>
+  usd >= 1000 ? `$${String(Math.round(usd)).replace(/\B(?=(\d{3})+$)/g, ',')}`
+  : usd > 0 && usd < 0.01 ? '<$0.01'
+  : `$${usd.toFixed(2)}`
+
+const COST_COLOR = '#86c58a'
 
 const modelText = (m: Model) => `${m.name}${m.effort ? ` [${m.effort}]` : ''}`
 
@@ -818,6 +827,8 @@ export const register: Register = on => {
       const s = snapshotOf(usage.context)
       if (s && !same(await read($, snapshot), s)) await update($, snapshot, () => s)
     }
+    // A resumed session has already cost something: the total draws before the next turn.
+    if (usage.cost && (await read($, cost)) !== usage.cost.usd) await update($, cost, () => usage.cost!.usd)
 
     // Nothing here waits on git, node or the network: the session starts at once.
     void loadModel($)
@@ -942,6 +953,12 @@ export const register: Register = on => {
       void loadGit($)
     }
 
+    // The same total /cost and the status line show, subagents included.
+    if (e.changed.includes('cost') && e.cost && (await read($, cost)) !== e.cost.usd) {
+      const usd = e.cost.usd
+      await update($, cost, () => usd)
+    }
+
     const s = e.changed.includes('context') ? snapshotOf(e.context) : null
     if (s) {
       const { tokens, window } = s
@@ -964,10 +981,10 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     // Every read at once; the countdowns draw against the minute's tick, not a clock call.
-    const [s, m, g, w, c, rl, sc, t, bd, ag, showAll] = await Promise.all([
+    const [s, m, g, w, c, rl, sc, t, bd, ag, showAll, usd] = await Promise.all([
       read($, snapshot), read($, model), read($, git), read($, weather),
       read($, cache), read($, rate), read($, scoped), read($, tick), read($, breakdown), read($, agents),
-      read($, allFiles),
+      read($, allFiles), read($, cost),
     ])
     const now = Math.max(t, await $.clock.now())
     const limits = [
@@ -977,7 +994,7 @@ export const register: Register = on => {
 
     const { Box, Text, Button } = $.ui.resolve(e)
 
-    if (!s && !m && !g && !w && !c && limits.length === 0 && ag.length === 0) {
+    if (!s && !m && !g && !w && !c && usd === null && limits.length === 0 && ag.length === 0) {
       return <Text dimColor>Waiting for the first turn…</Text>
     }
 
@@ -1048,7 +1065,7 @@ export const register: Register = on => {
 
     // ---- Repository, branch and its uncommitted files, then model and effort
     const files = g?.files ?? []
-    const header = g || m ? (
+    const header = g || m || usd !== null ? (
       <Box flexDirection="column">
         {g ? (
           <Text>
@@ -1081,11 +1098,17 @@ export const register: Register = on => {
             <Text dimColor>  {showAll ? 'show fewer' : `+${files.length - MAX_FILES} more`}</Text>
           </Button>
         ) : null}
-        {m ? (
-          <Text>
-            <Text color={MODEL_COLOR}>{m.name}</Text>
-            {m.effort ? <Text color={EFFORT_COLOR[m.effort] ?? '#b4b4b4'}> [{m.effort}]</Text> : null}
-          </Text>
+        {/* The model and effort, and on the right what the session has cost so far. */}
+        {m || usd !== null ? (
+          <Box flexDirection="row" justifyContent="space-between">
+            {m ? (
+              <Text>
+                <Text color={MODEL_COLOR}>{m.name}</Text>
+                {m.effort ? <Text color={EFFORT_COLOR[m.effort] ?? '#b4b4b4'}> [{m.effort}]</Text> : null}
+              </Text>
+            ) : <Text> </Text>}
+            {usd !== null ? <Text bold color={COST_COLOR}>{fmtCost(usd)}</Text> : null}
+          </Box>
         ) : null}
       </Box>
     ) : null

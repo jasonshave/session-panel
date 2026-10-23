@@ -9,7 +9,10 @@ From the top, the panel shows:
   Click `+N more` to list them all. Click a file to open Claude Code's diff panel (`/diff`),
   then pick the file in its list: the diff panel cannot be opened at one file. It opens as a
   tab in the same place as this panel; widen that area to read a diff comfortably.
-- **Model**: the model and effort level the last request used.
+- **Model and cost**: the model and effort level the last request used and, on the right, what
+  the session has cost so far in US dollars. It is the same total `/cost` gives: every request
+  this session made, its subagents' included, priced at API rates. On a Pro or Max plan that is
+  what the work would cost on the API, not what you are charged.
 - **Context**: how full the context window is. The bar is split into colours by what fills it
   (messages, tools, MCP tools, system prompt, memory files and so on), and the list under it is
   its key. Under the list, the cache bar drains as the prompt cache ages: yellow at half its

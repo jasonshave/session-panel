@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 
 import {
-  activityOf, agentTree, cacheColor, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
+  activityOf, agentTree, cacheColor, fmtCost, HATS, pickHat, cacheLimit, etaMs, fileLetter, fmt, fmtElapsed, fmtReset, gitText, meters, modelName,
   parseStatus, planAfter, rainText, segments, span, stripWidth, tailPath, tempColor,
 } from '../hooks/register'
 
@@ -36,6 +36,23 @@ test('the context bar shows totals and no breakdown on both surfaces', async ($,
     expect(drawn).not.toContain('mcp tools')
     await ui.unmount()
   }
+})
+
+test('the session cost shows beside the model and follows the total', async ($, on) => {
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  mock.clock(on, { now: START })
+
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [], cost: { usd: 4.1749 }, changed: ['cost'] })
+  const ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Text', text: '$4.17' })).toBeDefined()
+
+  await $.session.measure({ context: { window: 1_000_000 }, rateLimits: [], cost: { usd: 12.5 }, changed: ['cost'] })
+  expect(await ui.find({ type: 'Text', text: '$12.50' })).toBeDefined()
+  await ui.unmount()
+
+  expect(fmtCost(0)).toBe('$0.00')
+  expect(fmtCost(0.004)).toBe('<$0.01')
+  expect(fmtCost(1234.6)).toBe('$1,235')
 })
 
 describe('usage allowances', () => {
