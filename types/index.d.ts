@@ -78,6 +78,8 @@ declare module 'claude-code' {
       git: Git | null
       // The whole list of uncommitted files, not just the first few.
       allFiles: boolean
+      // What the session has cost so far in US dollars, as /cost totals it; null before a figure.
+      cost: number | null
       weather: Weather | null
       agents: Agent[]
       // The moment the countdowns are drawn against: written each minute, and each second
