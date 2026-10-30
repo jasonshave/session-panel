@@ -1,6 +1,6 @@
 {
   "name": "session-panel",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "A session panel beside the conversation: repo and uncommitted files, context by what fills it, usage and prompt-cache bars, weather, and live subagent cards",
   "types": "./types/index.d.ts",
   "author": {
