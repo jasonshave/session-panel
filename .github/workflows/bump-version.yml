@@ -1,0 +1,50 @@
+# Claude Code offers people an update only when the version in plugin.json changes,
+# so every change to what the plugin runs gets a new minor version once it reaches main.
+# A change that already moved the version is left alone.
+name: Bump version
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "hooks/**"
+      - "scripts/**"
+      - "types/**"
+      - ".claude-plugin/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Raise the minor version unless this push already changed it
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          read_version() { node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'; }
+          before=$(git show "$BEFORE:.claude-plugin/plugin.json" | read_version)
+          now=$(read_version < .claude-plugin/plugin.json)
+          if [ "$before" != "$now" ]; then
+            echo "Version already changed in this push ($before -> $now)"
+            exit 0
+          fi
+
+          next=$(echo "$now" | awk -F. '{ print $1 "." $2 + 1 ".0" }')
+          sed -i "s/\"version\": \"$now\"/\"version\": \"$next\"/" .claude-plugin/plugin.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898237+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $next"
+          git pull --rebase
+          git push
