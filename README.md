@@ -17,7 +17,9 @@ From the top, the panel shows:
   (messages, tools, MCP tools, system prompt, memory files and so on), and the list under it is
   its key. Under the list, the cache bar drains as the prompt cache ages: yellow at half its
   life, orange at a quarter, red near the end. Once the cache lapses, the next message sends the
-  whole context again at full price. A notice pops up when the context passes 90%.
+  whole context again at full price. A notice pops up when the context passes 90%. After
+  `/clear`, the old conversation's figures go at once, and a moment later the bar shows what
+  the new conversation starts with, marked `~` as an estimate until its first answer.
 - **Usage**: your 5-hour and weekly allowances, and any per-model weekly limit. A bar turns
   yellow at 50% used and orange at 80%; a per-model limit turns red at 90%.
 - **Weather**: now, and a 5-day forecast for where you are.

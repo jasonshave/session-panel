@@ -543,21 +543,24 @@ export const snapshotOf = (c: SessionContextUsage): Snapshot | null =>
   : { tokens: c.tokens, window: c.window, percent: c.percent ?? Math.round((c.tokens / c.window) * 100) }
 
 let isCounting = false
-const loadBreakdown = async ($: EngineInterface) => {
+// `isCleared`: just after a /clear, when no response of the new conversation has come back, so
+// a fill the engine still reports can only be the old conversation's.
+const loadBreakdown = async ($: EngineInterface, isCleared = false) => {
   if (isCounting) return
   isCounting = true
   try {
     const { context } = await $.session.usage({ breakdown: 'summary' })
     const b = context.breakdown
     if (b) {
+      const reported = isCleared ? undefined : context.tokens
       const v: Breakdown = {
-        tokens: context.tokens ?? b.totalTokens,
+        tokens: reported ?? b.totalTokens,
         rows: b.categories.filter(c => c.kind === 'used' && c.tokens > 0).map(c => ({ name: c.name, tokens: c.tokens })),
       }
       if (!same(await read($, breakdown), v)) await update($, breakdown, () => v)
       // Before the first response the bar draws from the breakdown's estimate, so a new
       // session shows it at once; the first reported fill replaces it.
-      const s = snapshotOf(context) ?? {
+      const s = (isCleared ? null : snapshotOf(context)) ?? {
         tokens: b.totalTokens, window: context.window,
         percent: Math.round((b.totalTokens / context.window) * 100), isEstimate: true,
       }
@@ -810,6 +813,28 @@ const refill = async ($: EngineInterface, limits: readonly SessionRateLimit[]) =
   }
 }
 
+// The engine measures the session only when a turn ends, so after a /clear the old
+// conversation's fill and cache would stay up until the next answer. They go at once, and a
+// moment later (the new conversation in place) the bar shows what the fresh one starts with.
+const CLEAR_RECOUNT_MS = 1000
+
+const afterClear = async ($: EngineInterface) => {
+  await Promise.all([
+    update($, snapshot, () => null),
+    update($, breakdown, () => null),
+    update($, cache, () => null),
+  ])
+  $.clock.after(CLEAR_RECOUNT_MS, () => {
+    void loadBreakdown($, true)
+    // Whatever the new conversation's cost starts from, as /cost would say it.
+    void $.session.usage()
+      .then(async u => {
+        if (u.cost && (await read($, cost)) !== u.cost.usd) await update($, cost, () => u.cost!.usd)
+      })
+      .catch(() => undefined)
+  })
+}
+
 const openPane = ($: EngineInterface) => $.ui.open({ id: PANE, title: PANE_TITLE, columns: PANE_COLUMNS })
 
 export const register: Register = on => {
@@ -933,6 +958,15 @@ export const register: Register = on => {
         .then(now => update($, agents, list =>
           list.map(a => (a.id === id ? { ...a, status, endedAt: now, endedTurn: turnId, activity: undefined } : a))))
         .catch(() => undefined)
+    }
+    return next(e)
+  })
+
+  // Clearing never waits on the panel: one short bound covers every session.end hook.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      responded = false
+      await afterClear($).catch(() => undefined)
     }
     return next(e)
   })

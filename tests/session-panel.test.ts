@@ -353,6 +353,7 @@ describe('the context bar before the first response', () => {
     on('ui.open', () => ({ value: { isPlaced: true } }) as never)
     on('session.measure', (_, e) => ({ changed: e.changed }))
     on('session.start', (_, e) => ({ cwd: e.cwd }))
+    on('session.end', (_, e) => ({ sessionId: e.sessionId }))
     const clock = mock.clock(on, { now: START })
     await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true } as never)
     await clock.settle()
@@ -370,6 +371,24 @@ describe('the context bar before the first response', () => {
     await clock.settle()
     ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
     expect(await ui.find({ type: 'Text', text: /· 25k of 1M/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  // The engine measures only when a turn ends, and may still report the old conversation's fill.
+  test('a /clear drops the old fill at once, then draws the fresh estimate', async ($, on) => {
+    const clock = await start($, on, { tokens: 300000, percent: 30 })
+    await $.session.measure({ context: { tokens: 300000, window: 1_000_000, percent: 30 }, rateLimits: [], changed: ['context'] })
+    await clock.settle()
+
+    await $.session.end({ reason: 'clear', sessionId: 'old', resume: { id: 'old' } })
+    await clock.settle()
+    let ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+    expect(JSON.stringify(await ui.drawn())).not.toContain('300k')
+    await ui.unmount()
+
+    await clock.advance(1000)
+    ui = await $.ui.mount({ plugin: 'session-panel', surface: 'terminal', ...PANE })
+    expect(await ui.find({ type: 'Text', text: /~18k of 1M/ })).toBeDefined()
     await ui.unmount()
   })
 
